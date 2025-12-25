@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Parallel | Arb Sizer</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap');
+        body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        
+        .bg-profit { background-color: #22c55e; border-color: #4ade80; color: white; }
+        .bg-loss { background-color: #ef4444; border-color: #f87171; color: white; }
+        .bg-close { background-color: #eab308; border-color: #facc15; color: white; }
+    </style>
+</head>
+<body class="bg-slate-50 transition-colors duration-300">
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="typescript,react">
+        const { useState, useMemo, useEffect } = React;
+
+        // --- Icons ---
+        const Calculator = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>;
+        const Shield = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>;
+        const Globe = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9-3-9m-9 9a9 9 0 019-9"/></svg>;
+
+        const formatUSD = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
+        const formatPct = (val) => new Intl.NumberFormat('en-US', { style: 'percent', minimumFractionDigits: 2 }).format(val);
+
+        function App() {
+          const [isDark, setIsDark] = useState(false);
+          const [config, setConfig] = useState({
+            budget: 2500,
+            slippage: 0.003,
+            kalshi: { yes: 0.45, no: 0.52, feeMult: 0.07 },
+            poly: { yes: 0.50, no: 0.48, feePct: 0.01 }
+          });
+
+          useEffect(() => {
+            if (isDark) document.documentElement.classList.add('dark');
+            else document.documentElement.classList.remove('dark');
+          }, [isDark]);
+
+          const results = useMemo(() => {
+            const { budget, slippage, kalshi, poly } = config;
+
+            const calcKalshi = (p) => {
+                const base = p + slippage;
+                const fee = kalshi.feeMult * base * (1 - base);
+                return base + fee;
+            };
+            const calcPoly = (p) => (p + slippage) * (1 + (poly.feePct / 100));
+
+            const kYes = calcKalshi(kalshi.yes);
+            const kNo = calcKalshi(kalshi.no);
+            const pYes = calcPoly(poly.yes);
+            const pNo = calcPoly(poly.no);
+
+            const bestYes = kYes < pYes ? { platform: 'Kalshi', eff: kYes, base: kalshi.yes } : { platform: 'Polymarket', eff: pYes, base: poly.yes };
+            const bestNo = kNo < pNo ? { platform: 'Kalshi', eff: kNo, base: kalshi.no } : { platform: 'Polymarket', eff: pNo, base: poly.no };
+
+            const unitCost = bestYes.eff + bestNo.eff;
+            const q = unitCost > 0 ? Math.floor(budget / unitCost) : 0;
+            const totalCost = q * unitCost;
+            const profit = q - totalCost;
+
+            let status = 'loss';
+            if (unitCost < 1 && profit > 0) status = 'profit';
+            else if (unitCost >= 0.99 && unitCost < 1.01) status = 'close';
+
+            return { 
+                status,
+                unitCost, q, totalCost, profit, 
+                roi: totalCost > 0 ? (profit / totalCost) : 0,
+                bestYes, bestNo,
+                kYes, kNo, pYes, pNo
+            };
+          }, [config]);
+
+          const getStatusClasses = () => {
+              if (results.status === 'profit') return 'bg-profit shadow-2xl shadow-green-500/20';
+              if (results.status === 'close') return 'bg-close shadow-2xl shadow-yellow-500/20';
+              return 'bg-loss shadow-2xl shadow-red-500/20';
+          };
+
+          return (
+            <div className="min-h-screen transition-colors duration-300 dark:bg-slate-900 dark:text-slate-100 p-4 md:p-12">
+              <div className="max-w-4xl mx-auto">
+                
+                <header className="flex justify-between items-center mb-10">
+                  <div>
+                    <h1 className="text-3xl font-black tracking-tighter text-indigo-600 dark:text-indigo-400">MARKET PARALLEL</h1>
+                    <p className="text-[10px] font-bold tracking-widest uppercase opacity-50">Unified Arb Sizer</p>
+                  </div>
+                  <button onClick={() => setIsDark(!isDark)} className="w-10 h-10 flex items-center justify-center rounded-full bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700">
+                    {isDark ? '☀️' : '🌙'}
+                  </button>
+                </header>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  
+                  {/* Left Column: Inputs */}
+                  <div className="lg:col-span-7 space-y-6">
+                    
+                    {/* Budget */}
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl shadow-sm border border-slate-100 dark:border-slate-700">
+                      <div className="flex items-center gap-2 mb-4 text-indigo-500 font-bold uppercase text-xs tracking-widest">
+                        <Calculator /> Capital Config
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                            <label className="text-[10px] font-bold opacity-40 uppercase">Budget ($)</label>
+                            <input type="number" value={config.budget} onChange={e => setConfig({...config, budget: +e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 p-3 rounded-2xl font-mono text-xl outline-none focus:ring-2 ring-indigo-500/20" />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-[10px] font-bold opacity-40 uppercase">Slippage Buffer</label>
+                            <input type="number" step="0.001" value={config.slippage} onChange={e => setConfig({...config, slippage: +e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 p-3 rounded-2xl font-mono text-xl outline-none" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Kalshi */}
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl shadow-sm border border-slate-100 dark:border-slate-700">
+                      <div className="flex justify-between items-center mb-4">
+                        <div className="flex items-center gap-2 text-emerald-500 font-bold uppercase text-xs tracking-widest">
+                            <Shield /> Kalshi
+                        </div>
+                        <span className="text-[10px] font-mono opacity-40 italic">7% Variable Fee</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-2xl">
+                            <label className="text-[9px] font-black opacity-30 block">YES PRICE</label>
+                            <input type="number" step="0.01" value={config.kalshi.yes} onChange={e => setConfig({...config, kalshi: {...config.kalshi, yes: +e.target.value}})} className="bg-transparent font-mono text-xl w-full outline-none" />
+                            <div className="text-[10px] font-bold text-indigo-500">Eff: ${results.kYes.toFixed(4)}</div>
+                        </div>
+                        <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-2xl">
+                            <label className="text-[9px] font-black opacity-30 block">NO PRICE</label>
+                            <input type="number" step="0.01" value={config.kalshi.no} onChange={e => setConfig({...config, kalshi: {...config.kalshi, no: +e.target.value}})} className="bg-transparent font-mono text-xl w-full outline-none" />
+                            <div className="text-[10px] font-bold text-indigo-500">Eff: ${results.kNo.toFixed(4)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Poly */}
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl shadow-sm border border-slate-100 dark:border-slate-700">
+                      <div className="flex justify-between items-center mb-4">
+                        <div className="flex items-center gap-2 text-blue-500 font-bold uppercase text-xs tracking-widest">
+                            <Globe /> Polymarket
+                        </div>
+                        <span className="text-[10px] font-mono opacity-40 italic">0.01% Taker Fee</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-2xl">
+                            <label className="text-[9px] font-black opacity-30 block">YES PRICE</label>
+                            <input type="number" step="0.01" value={config.poly.yes} onChange={e => setConfig({...config, poly: {...config.poly, yes: +e.target.value}})} className="bg-transparent font-mono text-xl w-full outline-none" />
+                            <div className="text-[10px] font-bold text-indigo-500">Eff: ${results.pYes.toFixed(4)}</div>
+                        </div>
+                        <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-2xl">
+                            <label className="text-[9px] font-black opacity-30 block">NO PRICE</label>
+                            <input type="number" step="0.01" value={config.poly.no} onChange={e => setConfig({...config, poly: {...config.poly, no: +e.target.value}})} className="bg-transparent font-mono text-xl w-full outline-none" />
+                            <div className="text-[10px] font-bold text-indigo-500">Eff: ${results.pNo.toFixed(4)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Output */}
+                  <div className="lg:col-span-5 space-y-6">
+                    <div className={`p-8 rounded-[2rem] border-4 transition-all duration-300 ${getStatusClasses()}`}>
+                        <div className="mb-10">
+                            <h2 className="text-4xl font-black tracking-tighter leading-none">
+                                {results.status === 'profit' ? 'PROFITABLE' : results.status === 'close' ? 'TIGHT MARGIN' : 'NOT PROFITABLE'}
+                            </h2>
+                            <p className="text-xs font-bold opacity-80 mt-1 uppercase tracking-widest">Combined Cost: ${results.unitCost.toFixed(4)}</p>
+                        </div>
+
+                        <div className="space-y-4">
+                            <div className="bg-black/20 p-4 rounded-2xl backdrop-blur-sm border border-white/20">
+                                <div className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1">Total Contracts</div>
+                                <div className="text-4xl font-mono font-black">{results.q.toLocaleString()}</div>
+                            </div>
+                            <div className="bg-black/20 p-4 rounded-2xl backdrop-blur-sm border border-white/20">
+                                <div className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1">Expected Profit</div>
+                                <div className="text-4xl font-mono font-black">{formatUSD(results.profit)}</div>
+                            </div>
+                        </div>
+
+                        <div className="mt-6 text-center">
+                            <div className="inline-block px-4 py-1 rounded-full bg-black/20 text-[10px] font-black tracking-widest uppercase">
+                                ROI: {formatPct(results.roi)}
+                            </div>
+                        </div>
+                    </div>
+
+                    {results.status === 'profit' && (
+                      <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl border border-slate-100 dark:border-slate-700 shadow-sm animate-in fade-in slide-in-from-bottom-4">
+                        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] mb-6 text-slate-400">Execution Plan</h3>
+                        <div className="space-y-6">
+                            <div className="relative pl-8 border-l-2 border-slate-100 dark:border-slate-700">
+                                <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-indigo-500 ring-4 ring-white dark:ring-slate-800" />
+                                <div className="text-sm font-black italic">BUY YES ON {results.bestYes.platform.toUpperCase()}</div>
+                                <div className="text-xs opacity-60 font-medium">{results.q} @ ${results.bestYes.base}</div>
+                            </div>
+                            <div className="relative pl-8 border-l-2 border-slate-100 dark:border-slate-700">
+                                <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-indigo-500 ring-4 ring-white dark:ring-slate-800" />
+                                <div className="text-sm font-black italic">BUY NO ON {results.bestNo.platform.toUpperCase()}</div>
+                                <div className="text-xs opacity-60 font-medium">{results.q} @ ${results.bestNo.base}</div>
+                            </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <footer className="mt-12 text-center text-[9px] font-bold opacity-30 uppercase tracking-[0.3em]">
+                Kalshi variable fees & Polymarket taker fees included
+              </footer>
+            </div>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
